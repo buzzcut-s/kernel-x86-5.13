@@ -312,6 +312,25 @@ config KERNEL_UNCOMPRESSED
 
 endchoice
 
+menu "ZSTD compression options"
+    depends on KERNEL_ZSTD
+
+config KERNEL_ZSTD_LEVEL
+    int "Compression level (1-19)"
+    range 1 19
+    default 19
+    help
+        Choose a compression level for zstd kernel compression.
+        Default is 19.
+
+config KERNEL_ZSTD_LEVEL_ULTRA
+    bool "Ultra compression"
+    help
+        Selecting this overrides the chosen compression level and enables
+        the highest possible compression level for zstd (ultra-22).
+
+endmenu
+
 config DEFAULT_INIT
 	string "Default init path"
 	default ""
@@ -1228,6 +1247,22 @@ config USER_NS
 
 	  If unsure, say N.
 
+config USER_NS_UNPRIVILEGED
+	bool "Allow unprivileged users to create namespaces"
+	default y
+	depends on USER_NS
+	help
+	  When disabled, unprivileged users will not be able to create
+	  new namespaces. Allowing users to create their own namespaces
+	  has been part of several recent local privilege escalation
+	  exploits, so if you need user namespaces but are
+	  paranoid^Wsecurity-conscious you want to disable this.
+
+	  This setting can be overridden at runtime via the
+	  kernel.unprivileged_userns_clone sysctl.
+
+	  If unsure, say Y.
+
 config PID_NS
 	bool "PID Namespaces"
 	default y
@@ -1368,7 +1403,6 @@ config CC_OPTIMIZE_FOR_PERFORMANCE
 
 config CC_OPTIMIZE_FOR_PERFORMANCE_O3
 	bool "Optimize more for performance (-O3)"
-	depends on ARC
 	help
 	  Choosing this option will pass "-O3" to your compiler to optimize
 	  the kernel yet more for performance.
@@ -1588,6 +1622,13 @@ config FUTEX
 	  Disabling this option will cause the kernel to be built without
 	  support for "fast userspace mutexes".  The resulting kernel may not
 	  run glibc-based applications correctly.
+
+config FUTEX2
+	bool "Enable futex2 support" if EXPERT
+	depends on FUTEX
+	default y
+	help
+	  Support for futex2 interface.
 
 config FUTEX_PI
 	bool
@@ -2280,6 +2321,14 @@ config MODULE_COMPRESS_ZSTD
 	  with .ko.zst.
 
 endchoice
+
+config MODULE_COMPRESS_ZSTD_LEVEL
+    int "Compression level (1-19)"
+    depends on MODULE_COMPRESS_ZSTD
+    range 1 19
+    default 19
+    help
+        Compression level used by zstd for compressing modules.
 
 config MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS
 	bool "Allow loading of modules with missing namespace imports"

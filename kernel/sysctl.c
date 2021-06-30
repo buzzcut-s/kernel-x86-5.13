@@ -103,6 +103,9 @@
 #ifdef CONFIG_LOCKUP_DETECTOR
 #include <linux/nmi.h>
 #endif
+#ifdef CONFIG_USER_NS
+#include <linux/user_namespace.h>
+#endif
 
 #if defined(CONFIG_SYSCTL)
 
@@ -124,9 +127,9 @@ static int one_thousand = 1000;
 static int __maybe_unused zero = 0;
 extern int sched_yield_type;
 #endif
-#ifdef CONFIG_PRINTK
 static int ten_thousand = 10000;
-#endif
+extern int hrtimer_granularity_us;
+extern int hrtimeout_min_us;
 #ifdef CONFIG_PERF_EVENTS
 static int six_hundred_forty_kb = 640 * 1024;
 #endif
@@ -1752,6 +1755,24 @@ static struct ctl_table kern_table[] = {
 #endif /* CONFIG_SCHED_DEBUG */
 #else  /* !CONFIG_SCHED_ALT */
 	{
+		.procname	= "hrtimer_granularity_us",
+		.data		= &hrtimer_granularity_us,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= &ten_thousand,
+	},
+	{
+		.procname	= "hrtimeout_min_us",
+		.data		= &hrtimeout_min_us,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= SYSCTL_ONE,
+		.extra2		= &ten_thousand,
+	},
+	{
 		.procname	= "sched_child_runs_first",
 		.data		= &sysctl_sched_child_runs_first,
 		.maxlen		= sizeof(unsigned int),
@@ -1915,6 +1936,15 @@ static struct ctl_table kern_table[] = {
 		.procname	= "core_pipe_limit",
 		.data		= &core_pipe_limit,
 		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+#endif
+#ifdef CONFIG_USER_NS
+	{
+		.procname	= "unprivileged_userns_clone",
+		.data		= &unprivileged_userns_clone,
+		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
