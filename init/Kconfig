@@ -2290,7 +2290,7 @@ endchoice
 
 config MODULE_COMPRESS_ZSTD_ULTRA
 	depends on MODULE_COMPRESS_ZSTD
-	bool "ZSTD"
+	bool "Enable ZSTD ultra compression"
 	help
 	  Compress modules with ZSTD using the highest possible compression.
 
