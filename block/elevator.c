@@ -203,7 +203,7 @@ static inline void __elv_rqhash_del(struct request *rq)
 	rq->rq_flags &= ~RQF_HASHED;
 }
 
-void elv_rqhash_del(struct request_queue *q, struct request *rq)
+void elv_rqhash_del(struct request *rq)
 {
 	if (ELV_ON_HASH(rq))
 		__elv_rqhash_del(rq);
@@ -350,9 +350,11 @@ enum elv_merge elv_merge(struct request_queue *q, struct request **req,
  * we can append 'rq' to an existing request, so we can throw 'rq' away
  * afterwards.
  *
- * Returns true if we merged, false otherwise
+ * Returns true if we merged, false otherwise. 'free' will contain all
+ * requests that need to be freed.
  */
-bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
+bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq,
+			      struct list_head *free)
 {
 	struct request *__rq;
 	bool ret;
@@ -363,8 +365,10 @@ bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
 	/*
 	 * First try one-hit cache.
 	 */
-	if (q->last_merge && blk_attempt_req_merge(q, q->last_merge, rq))
+	if (q->last_merge && blk_attempt_req_merge(q, q->last_merge, rq)) {
+		list_add(&rq->queuelist, free);
 		return true;
+	}
 
 	if (blk_queue_noxmerges(q))
 		return false;
@@ -378,6 +382,7 @@ bool elv_attempt_insert_merge(struct request_queue *q, struct request *rq)
 		if (!__rq || !blk_attempt_req_merge(q, __rq, rq))
 			break;
 
+		list_add(&rq->queuelist, free);
 		/* The merged request could be merged with others, try again */
 		ret = true;
 		rq = __rq;
@@ -417,7 +422,7 @@ struct request *elv_latter_request(struct request_queue *q, struct request *rq)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->type->ops.next_request)
-		return e->type->ops.next_request(q, rq);
+		return e->type->ops.next_request(rq);
 
 	return NULL;
 }
@@ -427,7 +432,7 @@ struct request *elv_former_request(struct request_queue *q, struct request *rq)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->type->ops.former_request)
-		return e->type->ops.former_request(q, rq);
+		return e->type->ops.former_request(rq);
 
 	return NULL;
 }
@@ -522,6 +527,10 @@ void elv_unregister_queue(struct request_queue *q)
 
 int elv_register(struct elevator_type *e)
 {
+	/* insert_requests and dispatch_request are mandatory */
+	if (WARN_ON_ONCE(!e->ops.insert_requests || !e->ops.dispatch_request))
+		return -EINVAL;
+
 	/* create icq_cache if requested */
 	if (e->icq_size) {
 		if (WARN_ON(e->icq_size < sizeof(struct io_cq)) ||
@@ -803,8 +812,7 @@ ssize_t elv_iosched_show(struct request_queue *q, char *name)
 	return len;
 }
 
-struct request *elv_rb_former_request(struct request_queue *q,
-				      struct request *rq)
+struct request *elv_rb_former_request(struct request *rq)
 {
 	struct rb_node *rbprev = rb_prev(&rq->rb_node);
 
@@ -815,8 +823,7 @@ struct request *elv_rb_former_request(struct request_queue *q,
 }
 EXPORT_SYMBOL(elv_rb_former_request);
 
-struct request *elv_rb_latter_request(struct request_queue *q,
-				      struct request *rq)
+struct request *elv_rb_latter_request(struct request *rq)
 {
 	struct rb_node *rbnext = rb_next(&rq->rb_node);
 

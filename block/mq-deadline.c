@@ -120,7 +120,7 @@ static void deadline_remove_request(struct request_queue *q, struct request *rq)
 	if (!RB_EMPTY_NODE(&rq->rb_node))
 		deadline_del_rq_rb(dd, rq);
 
-	elv_rqhash_del(q, rq);
+	elv_rqhash_del(rq);
 	if (q->last_merge == rq)
 		q->last_merge = NULL;
 }
@@ -487,6 +487,7 @@ static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 	struct request_queue *q = hctx->queue;
 	struct deadline_data *dd = q->elevator->elevator_data;
 	const int data_dir = rq_data_dir(rq);
+	LIST_HEAD(free);
 
 	/*
 	 * This may be a requeue of a write request that has locked its
@@ -494,8 +495,10 @@ static void dd_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 	 */
 	blk_req_zone_write_unlock(rq);
 
-	if (blk_mq_sched_try_insert_merge(q, rq))
+	if (blk_mq_sched_try_insert_merge(q, rq, &free)) {
+		blk_mq_free_requests(&free);
 		return;
+	}
 
 	trace_block_rq_insert(rq);
 
