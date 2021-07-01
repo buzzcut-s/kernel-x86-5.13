@@ -2308,7 +2308,7 @@ config MODULE_COMPRESS_ZSTD_LEVEL_ULTRA
     range 20 22
     default 22
     help
-        Compression level used by zstd for compressing modules.
+        Ultra compression level used by zstd for compressing modules.
 
 config MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS
 	bool "Allow loading of modules with missing namespace imports"
