@@ -5,8 +5,7 @@
 #include "blk-mq.h"
 #include "blk-mq-tag.h"
 
-struct io_cq *blk_mq_sched_lookup_icq(struct request_queue *q);
-void blk_mq_sched_assign_ioc(struct request *rq, struct io_cq *icq);
+void blk_mq_sched_assign_ioc(struct request *rq);
 
 bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 		unsigned int nr_segs, struct request **merged_request);

@@ -18,8 +18,9 @@
 #include "blk-mq-tag.h"
 #include "blk-wbt.h"
 
-struct io_cq *blk_mq_sched_lookup_icq(struct request_queue *q)
+void blk_mq_sched_assign_ioc(struct request *rq)
 {
+	struct request_queue *q = rq->q;
 	struct io_context *ioc;
 	struct io_cq *icq;
 
@@ -28,20 +29,17 @@ struct io_cq *blk_mq_sched_lookup_icq(struct request_queue *q)
 	 */
 	ioc = current->io_context;
 	if (!ioc)
-		return NULL;
+		return;
 
 	spin_lock_irq(&q->queue_lock);
 	icq = ioc_lookup_icq(ioc, q);
 	spin_unlock_irq(&q->queue_lock);
-	if (icq)
-		return icq;
-	return ioc_create_icq(ioc, q, GFP_ATOMIC);
-}
 
-void blk_mq_sched_assign_ioc(struct request *rq, struct io_cq *icq)
-{
-	if (!icq)
-		return;
+	if (!icq) {
+		icq = ioc_create_icq(ioc, q, GFP_ATOMIC);
+		if (!icq)
+			return;
+	}
 	get_io_context(icq->ioc);
 	rq->elv.icq = icq;
 }
