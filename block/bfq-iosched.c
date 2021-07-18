@@ -269,6 +269,15 @@ static struct kmem_cache *bfq_pool;
 #define BFQ_RATE_SHIFT		16
 
 /*
+ * 1) bfq keep dispatching requests with same size for at least one second.
+ * 2) bfq dispatch at lease 1024 requests
+ *
+ * We think bfq are dispatching request with same size if the above two
+ * conditions hold true.
+ */
+#define VARIED_REQUEST_SIZE(bfqd) ((bfqd)->dispatch_count < 1024 ||\
+		time_before(jiffies, (bfqd)->dispatch_time + HZ))
+/*
  * When configured for computing the duration of the weight-raising
  * for interactive queues automatically (see the comments at the
  * beginning of this file), BFQ does it using the following formula:
@@ -565,6 +574,71 @@ static struct request *bfq_choose_req(struct bfq_data *bfqd,
 	}
 }
 
+#define BFQ_LIMIT_INLINE_DEPTH 16
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+static bool bfqq_request_over_limit(struct bfq_queue *bfqq, int limit)
+{
+	struct bfq_data *bfqd = bfqq->bfqd;
+	struct bfq_entity *entity = &bfqq->entity;
+	struct bfq_entity *inline_entities[BFQ_LIMIT_INLINE_DEPTH];
+	struct bfq_entity **entities = inline_entities;
+	int depth, level;
+	bool ret = false;
+
+	if (!entity->on_st_or_in_serv)
+		return false;
+
+	/* +1 for bfqq entity, root cgroup not included */
+	depth = bfqg_to_blkg(bfqq_group(bfqq))->blkcg->css.cgroup->level + 1;
+	if (depth > BFQ_LIMIT_INLINE_DEPTH) {
+		entities = kmalloc_array(depth, sizeof(*entities), GFP_NOIO);
+		if (!entities)
+			return false;
+	}
+
+	spin_lock_irq(&bfqd->lock);
+	if (!entity->on_st_or_in_serv)
+		goto out;
+	/* Gather our ancestors as we need to traverse them in reverse order */
+	level = 0;
+	for_each_entity(entity) {
+		/* Uh, more parents than cgroup subsystem thinks? */
+		if (WARN_ON_ONCE(level >= depth))
+			break;
+		entities[level++] = entity;
+	}
+	WARN_ON_ONCE(level != depth);
+	for (level--; level >= 0; level--) {
+		entity = entities[level];
+		/*
+		 * If the leaf entity has work to do, parents should be tracked
+		 * as well.
+		 */
+		WARN_ON_ONCE(!entity->on_st_or_in_serv);
+		limit = DIV_ROUND_CLOSEST(limit * entity->weight,
+					bfq_entity_service_tree(entity)->wsum);
+		if (entity->allocated >= limit) {
+			bfq_log_bfqq(bfqq->bfqd, bfqq,
+				"too many requests: allocated %d limit %d level %d",
+				entity->allocated, limit, level);
+			ret = true;
+			break;
+		}
+	}
+out:
+	spin_unlock_irq(&bfqd->lock);
+	if (entities != inline_entities)
+		kfree(entities);
+	return ret;
+}
+#else
+static bool bfqq_request_over_limit(struct bfq_queue *bfqq, int limit)
+{
+	return false;
+}
+#endif
+
 /*
  * Async I/O can easily starve sync I/O (both sync reads and sync
  * writes), by consuming all tags. Similarly, storms of sync writes,
@@ -575,16 +649,28 @@ static struct request *bfq_choose_req(struct bfq_data *bfqd,
 static void bfq_limit_depth(unsigned int op, struct blk_mq_alloc_data *data)
 {
 	struct bfq_data *bfqd = data->q->elevator->elevator_data;
+	struct bfq_io_cq *bic = data->icq ? icq_to_bic(data->icq) : NULL;
+	struct bfq_queue *bfqq = bic ? bic_to_bfqq(bic, op_is_sync(op)) : NULL;
+	int depth;
 
+	/* Sync reads have full depth available */
 	if (op_is_sync(op) && !op_is_write(op))
-		return;
+		depth = 0;
+	else
+		depth = bfqd->word_depths[!!bfqd->wr_busy_queues][op_is_sync(op)];
 
-	data->shallow_depth =
-		bfqd->word_depths[!!bfqd->wr_busy_queues][op_is_sync(op)];
+	/*
+	 * Does queue (or any parent entity) exceed number of requests that
+	 * should be available to it? Heavily limit depth so that it cannot
+	 * consume more available requests and thus starve other entities.
+	 */
+	if (bfqq && bfqq_request_over_limit(bfqq, data->q->nr_requests))
+		depth = 1;
 
 	bfq_log(bfqd, "[%s] wr_busy %d sync %d depth %u",
-			__func__, bfqd->wr_busy_queues, op_is_sync(op),
-			data->shallow_depth);
+		__func__, bfqd->wr_busy_queues, op_is_sync(op), depth);
+	if (depth)
+		data->shallow_depth = depth;
 }
 
 static struct bfq_queue *
@@ -709,7 +795,9 @@ bfq_pos_tree_add_move(struct bfq_data *bfqd, struct bfq_queue *bfqq)
  * much easier to maintain the needed state:
  * 1) all active queues have the same weight,
  * 2) all active queues belong to the same I/O-priority class,
- * 3) there are no active groups.
+ * 3) there is one active group at most.
+ * If the last condition is false, there is no need to guarantee the
+ * same share of the throughput of queues in the same group.
  * In particular, the last condition is always true if hierarchical
  * support or the cgroups interface are not enabled, thus no state
  * needs to be maintained in this case.
@@ -717,7 +805,17 @@ bfq_pos_tree_add_move(struct bfq_data *bfqd, struct bfq_queue *bfqq)
 static bool bfq_asymmetric_scenario(struct bfq_data *bfqd,
 				   struct bfq_queue *bfqq)
 {
-	bool smallest_weight = bfqq &&
+	bool smallest_weight;
+	bool varied_queue_weights;
+	bool multiple_classes_busy;
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	if (bfqd->num_groups_with_pending_reqs > 1 &&
+	    VARIED_REQUEST_SIZE(bfqd))
+		return true;
+#endif
+
+	smallest_weight = bfqq &&
 		bfqq->weight_counter &&
 		bfqq->weight_counter ==
 		container_of(
@@ -729,21 +827,17 @@ static bool bfq_asymmetric_scenario(struct bfq_data *bfqd,
 	 * For queue weights to differ, queue_weights_tree must contain
 	 * at least two nodes.
 	 */
-	bool varied_queue_weights = !smallest_weight &&
+	varied_queue_weights = !smallest_weight &&
 		!RB_EMPTY_ROOT(&bfqd->queue_weights_tree.rb_root) &&
 		(bfqd->queue_weights_tree.rb_root.rb_node->rb_left ||
 		 bfqd->queue_weights_tree.rb_root.rb_node->rb_right);
 
-	bool multiple_classes_busy =
+	multiple_classes_busy =
 		(bfqd->busy_queues[0] && bfqd->busy_queues[1]) ||
 		(bfqd->busy_queues[0] && bfqd->busy_queues[2]) ||
 		(bfqd->busy_queues[1] && bfqd->busy_queues[2]);
 
-	return varied_queue_weights || multiple_classes_busy
-#ifdef CONFIG_BFQ_GROUP_IOSCHED
-	       || bfqd->num_groups_with_pending_reqs > 0
-#endif
-		;
+	return varied_queue_weights || multiple_classes_busy;
 }
 
 /*
@@ -1113,7 +1207,8 @@ bfq_bfqq_resume_state(struct bfq_queue *bfqq, struct bfq_data *bfqd,
 
 static int bfqq_process_refs(struct bfq_queue *bfqq)
 {
-	return bfqq->ref - bfqq->allocated - bfqq->entity.on_st_or_in_serv -
+	return bfqq->ref - bfqq->entity.allocated -
+		bfqq->entity.on_st_or_in_serv -
 		(bfqq->weight_counter != NULL) - bfqq->stable_ref;
 }
 
@@ -2361,6 +2456,9 @@ static int bfq_request_merge(struct request_queue *q, struct request **req,
 	__rq = bfq_find_rq_fmerge(bfqd, bio, q);
 	if (__rq && elv_bio_merge_ok(__rq, bio)) {
 		*req = __rq;
+
+		if (blk_discard_mergable(__rq))
+			return ELEVATOR_DISCARD_MERGE;
 		return ELEVATOR_FRONT_MERGE;
 	}
 
@@ -4913,6 +5011,20 @@ static bool bfq_has_work(struct blk_mq_hw_ctx *hctx)
 		bfq_tot_busy_queues(bfqd) > 0;
 }
 
+static void bfq_update_dispatch_size_info(struct bfq_data *bfqd,
+					  unsigned int size)
+{
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	if (bfqd->dispatch_size == size) {
+		bfqd->dispatch_count++;
+	} else {
+		bfqd->dispatch_size = size;
+		bfqd->dispatch_count = 1;
+		bfqd->dispatch_time = jiffies;
+	}
+#endif
+}
+
 static struct request *__bfq_dispatch_request(struct blk_mq_hw_ctx *hctx)
 {
 	struct bfq_data *bfqd = hctx->queue->elevator->elevator_data;
@@ -5007,6 +5119,7 @@ inc_in_driver_start_rq:
 		bfqd->rq_in_driver++;
 start_rq:
 		rq->rq_flags |= RQF_STARTED;
+		bfq_update_dispatch_size_info(bfqd, blk_rq_bytes(rq));
 	}
 exit:
 	return rq;
@@ -5886,6 +5999,22 @@ static void bfq_rq_enqueued(struct bfq_data *bfqd, struct bfq_queue *bfqq,
 	}
 }
 
+static void bfqq_request_allocated(struct bfq_queue *bfqq)
+{
+	struct bfq_entity *entity = &bfqq->entity;
+
+	for_each_entity(entity)
+		entity->allocated++;
+}
+
+static void bfqq_request_freed(struct bfq_queue *bfqq)
+{
+	struct bfq_entity *entity = &bfqq->entity;
+
+	for_each_entity(entity)
+		entity->allocated--;
+}
+
 /* returns true if it causes the idle timer to be disabled */
 static bool __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 {
@@ -5899,8 +6028,8 @@ static bool __bfq_insert_request(struct bfq_data *bfqd, struct request *rq)
 		 * Release the request's reference to the old bfqq
 		 * and make sure one is taken to the shared queue.
 		 */
-		new_bfqq->allocated++;
-		bfqq->allocated--;
+		bfqq_request_allocated(new_bfqq);
+		bfqq_request_freed(bfqq);
 		new_bfqq->ref++;
 		/*
 		 * If the bic associated with the process
@@ -6259,8 +6388,7 @@ static void bfq_completed_request(struct bfq_queue *bfqq, struct bfq_data *bfqd)
 
 static void bfq_finish_requeue_request_body(struct bfq_queue *bfqq)
 {
-	bfqq->allocated--;
-
+	bfqq_request_freed(bfqq);
 	bfq_put_queue(bfqq);
 }
 
@@ -6680,7 +6808,7 @@ static struct bfq_queue *bfq_init_rq(struct request *rq)
 		}
 	}
 
-	bfqq->allocated++;
+	bfqq_request_allocated(bfqq);
 	bfqq->ref++;
 	bfq_log_bfqq(bfqd, bfqq, "get_request %p: bfqq %p, %d",
 		     rq, bfqq, bfqq->ref);
@@ -6843,11 +6971,8 @@ void bfq_put_async_queues(struct bfq_data *bfqd, struct bfq_group *bfqg)
  * See the comments on bfq_limit_depth for the purpose of
  * the depths set in the function. Return minimum shallow depth we'll use.
  */
-static unsigned int bfq_update_depths(struct bfq_data *bfqd,
-				      struct sbitmap_queue *bt)
+static void bfq_update_depths(struct bfq_data *bfqd, struct sbitmap_queue *bt)
 {
-	unsigned int i, j, min_shallow = UINT_MAX;
-
 	/*
 	 * In-word depths if no bfq_queue is being weight-raised:
 	 * leaving 25% of tags only for sync reads.
@@ -6878,22 +7003,15 @@ static unsigned int bfq_update_depths(struct bfq_data *bfqd,
 	bfqd->word_depths[1][0] = max(((1U << bt->sb.shift) * 3) >> 4, 1U);
 	/* no more than ~37% of tags for sync writes (~20% extra tags) */
 	bfqd->word_depths[1][1] = max(((1U << bt->sb.shift) * 6) >> 4, 1U);
-
-	for (i = 0; i < 2; i++)
-		for (j = 0; j < 2; j++)
-			min_shallow = min(min_shallow, bfqd->word_depths[i][j]);
-
-	return min_shallow;
 }
 
 static void bfq_depth_updated(struct blk_mq_hw_ctx *hctx)
 {
 	struct bfq_data *bfqd = hctx->queue->elevator->elevator_data;
 	struct blk_mq_tags *tags = hctx->sched_tags;
-	unsigned int min_shallow;
 
-	min_shallow = bfq_update_depths(bfqd, tags->bitmap_tags);
-	sbitmap_queue_min_shallow_depth(tags->bitmap_tags, min_shallow);
+	bfq_update_depths(bfqd, tags->bitmap_tags);
+	sbitmap_queue_min_shallow_depth(tags->bitmap_tags, 1);
 }
 
 static int bfq_init_hctx(struct blk_mq_hw_ctx *hctx, unsigned int index)

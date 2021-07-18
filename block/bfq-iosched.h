@@ -172,6 +172,9 @@ struct bfq_entity {
 	/* budget, used also to calculate F_i: F_i = S_i + @budget / @weight */
 	int budget;
 
+	/* Number of requests allocated in the subtree of this entity */
+	int allocated;
+
 	/* device weight, if non-zero, it overrides the default weight of
 	 * bfq_group_data */
 	int dev_weight;
@@ -268,8 +271,6 @@ struct bfq_queue {
 	struct request *next_rq;
 	/* number of sync and async requests queued */
 	int queued[2];
-	/* number of requests currently allocated */
-	int allocated;
 	/* number of pending metadata requests */
 	int meta_pending;
 	/* fifo list of requests in sort_list */
@@ -770,6 +771,22 @@ struct bfq_data {
 	 * function)
 	 */
 	unsigned int word_depths[2][2];
+
+#ifdef CONFIG_BFQ_GROUP_IOSCHED
+	/* the size of last dispatched request */
+	unsigned int dispatch_size;
+	/*
+	 * If bfq keep dispatching requests with same size, this store the
+	 * count of requests. We use unsigned long here, so we don't care
+	 * about overflow.
+	 */
+	unsigned long dispatch_count;
+	/*
+	 * If bfq keep dispatching requests with same size, this store the
+	 * time when the first request was dispatched.
+	 */
+	unsigned long dispatch_time;
+#endif
 };
 
 enum bfqq_state_flags {
