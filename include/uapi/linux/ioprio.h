@@ -37,9 +37,9 @@ static inline bool ioprio_valid(unsigned short ioprio)
 }
 
 /*
- * 8 best effort priority levels are supported
+ * The RT an BE priority classes support up to 8 priority levels.
  */
-#define IOPRIO_BE_NR	(8)
+#define IOPRIO_NR_LEVELS	(8)
 
 enum {
 	IOPRIO_WHO_PROCESS = 1,
