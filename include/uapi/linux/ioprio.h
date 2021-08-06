@@ -5,14 +5,15 @@
 /*
  * Gives us 8 prio classes with 13-bits of data for each class
  */
-#define IOPRIO_CLASS_SHIFT	(13)
-#define IOPRIO_CLASS_MASK	(0x07)
+#define IOPRIO_CLASS_SHIFT	13
+#define IOPRIO_CLASS_MASK	0x07
 #define IOPRIO_PRIO_MASK	((1UL << IOPRIO_CLASS_SHIFT) - 1)
 
-#define IOPRIO_PRIO_CLASS(val)	\
-	(((val) >> IOPRIO_CLASS_SHIFT) & IOPRIO_CLASS_MASK)
-#define IOPRIO_PRIO_DATA(val)	((val) & IOPRIO_PRIO_MASK)
-#define IOPRIO_PRIO_VALUE(class, data)	(((class) << IOPRIO_CLASS_SHIFT) | data)
+#define IOPRIO_PRIO_CLASS(ioprio)	\
+	(((ioprio) >> IOPRIO_CLASS_SHIFT) & IOPRIO_CLASS_MASK)
+#define IOPRIO_PRIO_DATA(ioprio)	((ioprio) & IOPRIO_PRIO_MASK)
+#define IOPRIO_PRIO_VALUE(class, data)	\
+	(((class) << IOPRIO_CLASS_SHIFT) | ((data) & IOPRIO_PRIO_MASK))
 
 /*
  * These are the io priority groups as implemented by CFQ. RT is the realtime
@@ -29,17 +30,10 @@ enum {
 	IOPRIO_CLASS_MAX,
 };
 
-static inline bool ioprio_valid(unsigned short ioprio)
-{
-	unsigned short class = IOPRIO_PRIO_CLASS(ioprio);
-
-	return class > IOPRIO_CLASS_NONE && class < IOPRIO_CLASS_MAX;
-}
-
 /*
- * The RT an BE priority classes support up to 8 priority levels.
+ * The RT and BE priority classes both support up to 8 priority levels.
  */
-#define IOPRIO_NR_LEVELS	(8)
+#define IOPRIO_NR_LEVELS	8
 
 enum {
 	IOPRIO_WHO_PROCESS = 1,
@@ -48,8 +42,8 @@ enum {
 };
 
 /*
- * Fallback BE priority
+ * Fallback BE priority level.
  */
-#define IOPRIO_NORM	(4)
+#define IOPRIO_BE_NORM	4
 
 #endif /* _UAPI_LINUX_IOPRIO_H */

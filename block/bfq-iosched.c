@@ -277,6 +277,7 @@ static struct kmem_cache *bfq_pool;
  */
 #define VARIED_REQUEST_SIZE(bfqd) ((bfqd)->dispatch_count < 1024 ||\
 		time_before(jiffies, (bfqd)->dispatch_time + HZ))
+
 /*
  * When configured for computing the duration of the weight-raising
  * for interactive queues automatically (see the comments at the
@@ -795,8 +796,8 @@ bfq_pos_tree_add_move(struct bfq_data *bfqd, struct bfq_queue *bfqq)
  * much easier to maintain the needed state:
  * 1) all active queues have the same weight,
  * 2) all active queues belong to the same I/O-priority class,
- * 3) there is one active group at most.
- * If the last condition is false, there is no need to guarantee the
+ * 3) there are one active group at most(incluing root_group).
+ * If the last condition is false, there is no need to guarantee the,
  * same share of the throughput of queues in the same group.
  * In particular, the last condition is always true if hierarchical
  * support or the cgroups interface are not enabled, thus no state
@@ -813,6 +814,16 @@ static bool bfq_asymmetric_scenario(struct bfq_data *bfqd,
 	if (bfqd->num_groups_with_pending_reqs > 1 &&
 	    VARIED_REQUEST_SIZE(bfqd))
 		return true;
+
+	if (bfqd->num_groups_with_pending_reqs &&
+	    bfqd->num_queues_with_pending_reqs_in_root)
+		return true;
+
+	/*
+	 * Reach here means only one group(incluing root group) has pending
+	 * requests, thus it's safe to return.
+	 */
+	return false;
 #endif
 
 	smallest_weight = bfqq &&
@@ -953,8 +964,14 @@ reset_entity_pointer:
 void bfq_weights_tree_remove(struct bfq_data *bfqd,
 			     struct bfq_queue *bfqq)
 {
-	struct bfq_entity *entity = bfqq->entity.parent;
+	struct bfq_entity *entity = &bfqq->entity;
 
+	if (entity->in_groups_with_pending_reqs) {
+		entity->in_groups_with_pending_reqs = false;
+		bfqd->num_queues_with_pending_reqs_in_root--;
+	}
+
+	entity = entity->parent;
 	for_each_entity(entity) {
 		struct bfq_sched_data *sd = entity->my_sched_data;
 
@@ -5542,7 +5559,7 @@ static struct bfq_queue **bfq_async_queue_prio(struct bfq_data *bfqd,
 	case IOPRIO_CLASS_RT:
 		return &bfqg->async_bfqq[0][ioprio];
 	case IOPRIO_CLASS_NONE:
-		ioprio = IOPRIO_NORM;
+		ioprio = IOPRIO_BE_NORM;
 		fallthrough;
 	case IOPRIO_CLASS_BE:
 		return &bfqg->async_bfqq[1][ioprio];
