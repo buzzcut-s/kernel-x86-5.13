@@ -42,8 +42,8 @@ enum {
 };
 
 /*
- * Fallback BE priority level.
+ * Fallback BE priority
  */
-#define IOPRIO_BE_NORM	4
+#define IOPRIO_NORM	4
 
 #endif /* _UAPI_LINUX_IOPRIO_H */
