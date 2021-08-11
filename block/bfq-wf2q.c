@@ -527,9 +527,8 @@ unsigned short bfq_ioprio_to_weight(int ioprio)
  */
 static unsigned short bfq_weight_to_ioprio(int weight)
 {
-	int ioprio = IOPRIO_NR_LEVELS  - weight / BFQ_WEIGHT_CONVERSION_COEFF;
-
-	return ioprio < 0 ? 0 : min_t(int, ioprio, IOPRIO_NR_LEVELS - 1);
+	return max_t(int, 0,
+		     IOPRIO_NR_LEVELS * BFQ_WEIGHT_CONVERSION_COEFF - weight);
 }
 
 static void bfq_get_entity(struct bfq_entity *entity)
