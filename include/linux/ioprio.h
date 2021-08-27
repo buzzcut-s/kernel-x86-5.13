@@ -20,7 +20,7 @@ static inline bool ioprio_valid(unsigned short ioprio)
 {
 	unsigned short class = IOPRIO_PRIO_CLASS(ioprio);
 
-	return class > IOPRIO_CLASS_NONE && class < IOPRIO_CLASS_MAX;
+	return class > IOPRIO_CLASS_NONE && class <= IOPRIO_CLASS_IDLE;
 }
 
 /*
@@ -40,9 +40,10 @@ static inline int task_nice_ioclass(struct task_struct *task)
 {
 	if (task->policy == SCHED_IDLE)
 		return IOPRIO_CLASS_IDLE;
-	if (task_is_realtime(task))
+	else if (task_is_realtime(task))
 		return IOPRIO_CLASS_RT;
-	return IOPRIO_CLASS_BE;
+	else
+		return IOPRIO_CLASS_BE;
 }
 
 /*
